@@ -23,7 +23,11 @@ jobs:
         working-directory: android
         run: |
           chmod +x gradlew
-          ./gradlew assembleDebug
+          ./gradlew assembleDebug --stacktrace > "$RUNNER_TEMP/gradle.log" 2>&1 || {
+            echo "::error title=Gradle failed::$(grep -E 'What went wrong|FAILED|error:|Error|Caused by|not found|Could not|license' -A3 "$RUNNER_TEMP/gradle.log" | head -40 | sed ':a;N;$!ba;s/%/%25/g;s/\r//g;s/\n/%0A/g')"
+            tail -60 "$RUNNER_TEMP/gradle.log"
+            exit 1
+          }
       - uses: actions/upload-artifact@v4
         with:
           name: step4progress-test-apk
