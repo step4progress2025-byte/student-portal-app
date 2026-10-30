@@ -1,0 +1,20 @@
+{
+  "appId": "com.step4progress.ascend",
+  "appName": "Step4Progress Ascend",
+  "webDir": "www",
+  "backgroundColor": "#F7F3EA",
+  "android": {
+    "allowMixedContent": false
+  },
+  "plugins": {
+    "SplashScreen": {
+      "launchShowDuration": 1200,
+      "backgroundColor": "#1C3F6E",
+      "showSpinner": false
+    },
+    "StatusBar": {
+      "style": "DARK",
+      "backgroundColor": "#1C3F6E"
+    }
+  }
+}

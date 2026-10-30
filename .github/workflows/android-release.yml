@@ -1,0 +1,53 @@
+name: Android build
+# Run it from the Actions tab: "Run workflow". It makes a signed .aab for Google Play and a test .apk.
+on:
+  workflow_dispatch:
+    inputs:
+      version_code:
+        description: "Version code (a whole number that goes up every upload: 1, 2, 3...)"
+        required: true
+        default: "1"
+      version_name:
+        description: "Version shown to students"
+        required: true
+        default: "1.0"
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 20, cache: npm }
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: 21 }
+      - run: npm ci
+      - name: Get the latest portal page
+        run: |
+          mkdir -p portal
+          curl -fsSL "https://raw.githubusercontent.com/step4progress2025-byte/student-portal/main/index.html" -o portal/index.html
+          test -s portal/index.html
+      - name: Put your RevenueCat key into the app
+        env:
+          RC_ANDROID_KEY: ${{ secrets.RC_ANDROID_KEY }}
+        run: |
+          test -n "$RC_ANDROID_KEY"
+          sed -i "s|goog_REPLACE_ME|$RC_ANDROID_KEY|" portal/index.html
+      - run: npm run build:www && npx cap sync android
+      - name: Make the signing key file
+        run: echo "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" | base64 -d > "$RUNNER_TEMP/release.keystore"
+      - name: Build the signed bundle (.aab) for Google Play
+        working-directory: android
+        env:
+          KEYSTORE_FILE: ${{ runner.temp }}/release.keystore
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          chmod +x gradlew
+          ./gradlew bundleRelease assembleRelease -PVERSION_CODE=${{ inputs.version_code }} -PVERSION_NAME=${{ inputs.version_name }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android-release
+          path: |
+            android/app/build/outputs/bundle/release/*.aab
+            android/app/build/outputs/apk/release/*.apk

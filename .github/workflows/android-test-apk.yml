@@ -1,0 +1,30 @@
+name: Android test APK
+# Makes an .apk you can install on any Android phone to try the app. No secrets needed.
+# (Plan purchases show "not available" in this one; the Play Store build is android-release.yml.)
+on:
+  workflow_dispatch:
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 20, cache: npm }
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: 21 }
+      - run: npm ci
+      - name: Get the latest portal page
+        run: |
+          mkdir -p portal
+          curl -fsSL "https://raw.githubusercontent.com/step4progress2025-byte/student-portal/main/index.html" -o portal/index.html
+          test -s portal/index.html
+      - run: npm run build:www && npx cap sync android
+      - name: Build the test APK
+        working-directory: android
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleDebug
+      - uses: actions/upload-artifact@v4
+        with:
+          name: step4progress-test-apk
+          path: android/app/build/outputs/apk/debug/*.apk
