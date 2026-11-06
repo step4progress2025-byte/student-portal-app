@@ -1,0 +1,118 @@
+name: iOS build
+# Run from the Actions tab > "iOS build" > Run workflow.
+# mode "simulator": no Apple account needed. Proves the iPhone app compiles and gives a zip you can open in Xcode's simulator (on a Mac).
+# mode "testflight": needs the Apple secrets listed in IOS_GUIDE.md. Signs the app and uploads it to TestFlight so it installs on real iPhones.
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "simulator or testflight"
+        required: true
+        default: "simulator"
+      build_number:
+        description: "Build number (goes up every upload: 1, 2, 3...)"
+        required: true
+        default: "1"
+      version_name:
+        description: "Version shown to students"
+        required: true
+        default: "1.0"
+jobs:
+  build:
+    runs-on: macos-15
+    env:
+      APP_ID: com.step4progress.ascend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm }
+      - run: npm install --no-audit --no-fund
+      - name: Get the latest portal page and mock audio
+        run: |
+          mkdir -p portal
+          B="https://raw.githubusercontent.com/step4progress2025-byte/student-portal/main"
+          curl -fsSL "$B/index.html" -o portal/index.html
+          test -s portal/index.html
+          for f in ielts_mock1_section1.mp3 ielts_mock1_section2.mp3 ielts_mock1_section3.mp3 ielts_mock1_section4.mp3 ielts_mock1_task1.png; do
+            curl -fsSL "$B/$f" -o "portal/$f" || echo "::warning::$f not found in the web repo"
+          done
+      - name: Put your RevenueCat iPhone key into the app
+        if: ${{ inputs.mode == 'testflight' }}
+        env:
+          RC_IOS_KEY: ${{ secrets.RC_IOS_KEY }}
+        run: |
+          test -n "$RC_IOS_KEY"
+          sed -i '' "s|appl_REPLACE_ME|$RC_IOS_KEY|" portal/index.html
+      - name: Build the web part and create the iPhone project
+        run: |
+          npm run build:www
+          test -d ios || npx cap add ios
+          npx capacitor-assets generate --ios --assetPath resources || echo "::warning::icon generation skipped"
+          npx cap sync ios
+      - name: Allow microphone and speech recognition (Spark, IELTS speaking)
+        run: |
+          P=ios/App/App/Info.plist
+          /usr/libexec/PlistBuddy -c "Add :NSMicrophoneUsageDescription string 'Step4Progress uses the microphone so you can practise speaking with Spark.'" $P || true
+          /usr/libexec/PlistBuddy -c "Add :NSSpeechRecognitionUsageDescription string 'Step4Progress turns your speech into text for speaking practice.'" $P || true
+          /usr/libexec/PlistBuddy -c "Add :ITSAppUsesNonExemptEncryption bool false" $P || true
+      - name: Simulator build (no Apple account)
+        if: ${{ inputs.mode != 'testflight' }}
+        run: |
+          xcodebuild -project ios/App/App.xcodeproj -scheme App -configuration Debug \
+            -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath build CODE_SIGNING_ALLOWED=NO build 2>&1 | tail -40
+          cd build/Build/Products/Debug-iphonesimulator && zip -qr "$GITHUB_WORKSPACE/Step4Progress-Ascend-simulator.zip" App.app
+      - uses: actions/upload-artifact@v4
+        if: ${{ inputs.mode != 'testflight' }}
+        with:
+          name: ios-simulator-app
+          path: Step4Progress-Ascend-simulator.zip
+      - name: Sign and upload to TestFlight
+        if: ${{ inputs.mode == 'testflight' }}
+        env:
+          CERT_P12_BASE64: ${{ secrets.IOS_CERT_P12_BASE64 }}
+          CERT_PASSWORD: ${{ secrets.IOS_CERT_PASSWORD }}
+          PROFILE_BASE64: ${{ secrets.IOS_PROFILE_BASE64 }}
+          TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_KEY_P8_BASE64: ${{ secrets.ASC_KEY_P8_BASE64 }}
+        run: |
+          set -e
+          KC="$RUNNER_TEMP/s4p.keychain-db"; KP="tmp-$RANDOM"
+          security create-keychain -p "$KP" "$KC"; security set-keychain-settings -lut 21600 "$KC"
+          security unlock-keychain -p "$KP" "$KC"
+          echo "$CERT_P12_BASE64" | base64 -D > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -P "$CERT_PASSWORD" -A -t cert -f pkcs12 -k "$KC"
+          security set-key-partition-list -S apple-tool:,apple: -k "$KP" "$KC"
+          security list-keychains -d user -s "$KC" login.keychain
+          mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
+          echo "$PROFILE_BASE64" | base64 -D > "$RUNNER_TEMP/s4p.mobileprovision"
+          UUID=$(/usr/bin/security cms -D -i "$RUNNER_TEMP/s4p.mobileprovision" | plutil -extract UUID raw -o - -)
+          PNAME=$(/usr/bin/security cms -D -i "$RUNNER_TEMP/s4p.mobileprovision" | plutil -extract Name raw -o - -)
+          cp "$RUNNER_TEMP/s4p.mobileprovision" ~/Library/MobileDevice/Provisioning\ Profiles/$UUID.mobileprovision
+          cat > "$RUNNER_TEMP/export.plist" <<EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0"><dict>
+            <key>method</key><string>app-store-connect</string>
+            <key>teamID</key><string>$TEAM_ID</string>
+            <key>signingStyle</key><string>manual</string>
+            <key>provisioningProfiles</key><dict><key>$APP_ID</key><string>$PNAME</string></dict>
+          </dict></plist>
+          EOF
+          xcodebuild -project ios/App/App.xcodeproj -scheme App -configuration Release \
+            -destination 'generic/platform=iOS' -archivePath "$RUNNER_TEMP/App.xcarchive" archive \
+            DEVELOPMENT_TEAM="$TEAM_ID" CODE_SIGN_STYLE=Manual PROVISIONING_PROFILE_SPECIFIER="$PNAME" \
+            CODE_SIGN_IDENTITY="Apple Distribution" PRODUCT_BUNDLE_IDENTIFIER="$APP_ID" \
+            MARKETING_VERSION="${{ inputs.version_name }}" CURRENT_PROJECT_VERSION="${{ inputs.build_number }}" 2>&1 | tail -30
+          xcodebuild -exportArchive -archivePath "$RUNNER_TEMP/App.xcarchive" -exportOptionsPlist "$RUNNER_TEMP/export.plist" -exportPath "$RUNNER_TEMP/out"
+          mkdir -p ~/.appstoreconnect/private_keys
+          echo "$ASC_KEY_P8_BASE64" | base64 -D > ~/.appstoreconnect/private_keys/AuthKey_${ASC_KEY_ID}.p8
+          xcrun altool --upload-app --type ios --file "$RUNNER_TEMP/out/App.ipa" --apiKey "$ASC_KEY_ID" --apiIssuer "$ASC_ISSUER_ID"
+          cp "$RUNNER_TEMP/out/App.ipa" Step4Progress-Ascend.ipa
+      - uses: actions/upload-artifact@v4
+        if: ${{ inputs.mode == 'testflight' }}
+        with:
+          name: ios-ipa
+          path: Step4Progress-Ascend.ipa

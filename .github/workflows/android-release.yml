@@ -21,11 +21,15 @@ jobs:
       - uses: actions/setup-java@v4
         with: { distribution: temurin, java-version: 21 }
       - run: npm ci
-      - name: Get the latest portal page
+      - name: Get the latest portal page and mock audio
         run: |
           mkdir -p portal
-          curl -fsSL "https://raw.githubusercontent.com/step4progress2025-byte/student-portal/main/index.html" -o portal/index.html
+          B="https://raw.githubusercontent.com/step4progress2025-byte/student-portal/main"
+          curl -fsSL "$B/index.html" -o portal/index.html
           test -s portal/index.html
+          for f in ielts_mock1_section1.mp3 ielts_mock1_section2.mp3 ielts_mock1_section3.mp3 ielts_mock1_section4.mp3 ielts_mock1_task1.png; do
+            curl -fsSL "$B/$f" -o "portal/$f" || echo "::warning::$f not found in the web repo"
+          done
       - name: Put your RevenueCat key into the app
         env:
           RC_ANDROID_KEY: ${{ secrets.RC_ANDROID_KEY }}
